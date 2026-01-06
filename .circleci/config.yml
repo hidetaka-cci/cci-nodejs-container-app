@@ -1,0 +1,129 @@
+version: 2.1
+
+# CircleCI Orbsの定義
+orbs:
+  aws-ecr: circleci/aws-ecr@8.0.0
+  aws-ecs: circleci/aws-ecs@3.0.0
+
+# ジョブ定義
+jobs:
+  # コード取得（デフォルトで利用可能）
+  checkout:
+    docker:
+      - image: cimg/node:20.0
+    steps:
+      - checkout
+
+  # TypeScriptビルド
+  build:
+    docker:
+      - image: cimg/node:20.0
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "package-lock.json" }}
+            - v1-dependencies-
+      - run:
+          name: 依存関係のインストール
+          command: npm ci
+      - save_cache:
+          paths:
+            - node_modules
+          key: v1-dependencies-{{ checksum "package-lock.json" }}
+      - run:
+          name: TypeScriptビルド
+          command: npm run build
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist
+    retry:
+      max: 2
+
+  # vitestによる自動テスト実行
+  test:
+    docker:
+      - image: cimg/node:20.0
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "package-lock.json" }}
+            - v1-dependencies-
+      - run:
+          name: 依存関係のインストール
+          command: npm ci
+      - run:
+          name: テスト実行
+          command: npm test
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: coverage
+    retry:
+      max: 2
+
+  # AWS ECRへのイメージpush
+  push-to-ecr:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+      - setup_remote_docker:
+          version: 20.10.14
+      - aws-ecr/build-and-push-image:
+          account-url: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+          region: ${AWS_REGION}
+          repo: ${ECR_REPO_NAME}
+          tag: ${CIRCLE_SHA1},latest
+          setup-remote-docker: true
+    retry:
+      max: 2
+
+  # ECS Fargateへのデプロイ
+  deploy-to-ecs:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+      - aws-ecs/update-service:
+          cluster-name: ${ECS_CLUSTER_NAME}
+          family: ${ECS_TASK_DEFINITION_NAME}
+          service-name: ${ECS_SERVICE_NAME}
+          container-image-name-updates: |
+            container=${ECS_TASK_DEFINITION_NAME},image=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${CIRCLE_SHA1}
+          container-env-var-updates: |
+            container=${ECS_TASK_DEFINITION_NAME},name=IMAGE_TAG,value=${CIRCLE_SHA1}
+          deployment-configuration: |
+            maximumPercent=200,minimumHealthyPercent=100
+    retry:
+      max: 2
+
+# ワークフロー定義
+workflows:
+  build-test-deploy:
+    jobs:
+      - checkout
+      # buildとtestを並列実行
+      - build:
+          requires:
+            - checkout
+      - test:
+          requires:
+            - checkout
+      # ECRへのpushはbuildとtestの両方が成功した後に実行
+      - push-to-ecr:
+          requires:
+            - build
+            - test
+          context: aws-credentials
+      # ECSへのデプロイはECRへのpush成功後に実行
+      - deploy-to-ecs:
+          requires:
+            - push-to-ecr
+          context: aws-credentials
+          filters:
+            branches:
+              only: main  # mainブランチのみデプロイ
+
