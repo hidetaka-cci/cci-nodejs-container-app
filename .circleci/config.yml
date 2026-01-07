@@ -51,7 +51,6 @@ workflows:
       - test
       # ECRへのpushはbuildとtestの両方が成功した後に実行
       # OIDC認証を使用（context必須）
-      # aws-ecr Orbを使用してDocker Layer Cachingを有効化
       - aws-ecr/build_and_push_image:
           context: aws-oidc
           auth:
@@ -60,7 +59,6 @@ workflows:
                 region: ${AWS_REGION}
           repo: ${ECR_REPO_NAME}
           tag: ${CIRCLE_SHA1}
-          docker_layer_caching: true
           requires:
             - build
             - test
@@ -77,9 +75,9 @@ workflows:
                 role_arn: ${AWS_ROLE_ARN}
                 region: ${AWS_REGION}
           cluster: ${ECS_CLUSTER_NAME}
-          service-name: ${ECS_SERVICE_NAME}
+          service_name: ${ECS_SERVICE_NAME}
           family: cci-nodejs-container-app
-          container-image-name-updates: "container=cci-nodejs-container-app,tag=${CIRCLE_SHA1}"
+          container_image_name_updates: "container=cci-nodejs-container-app,tag=${CIRCLE_SHA1}"
           requires:
             - aws-ecr/build_and_push_image
           filters:
