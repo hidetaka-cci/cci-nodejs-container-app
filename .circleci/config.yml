@@ -2,6 +2,7 @@ version: 2.1
 
 # CircleCI Orbsの定義
 orbs:
+  aws-cli: circleci/aws-cli@5.0.0
   aws-ecr: circleci/aws-ecr@8.0.0
   aws-ecs: circleci/aws-ecs@3.0.0
 
@@ -72,6 +73,9 @@ jobs:
       - checkout
       - setup_remote_docker:
           version: 20.10.14
+      # OIDC認証を使用してAWSに接続
+      - aws-cli/setup:
+          role-arn: arn:aws:iam::992382483259:role/cci-hidetaka-oidc-role
       - aws-ecr/build-and-push-image:
           account-url: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
           region: ${AWS_REGION}
@@ -87,6 +91,9 @@ jobs:
       - image: cimg/base:stable
     steps:
       - checkout
+      # OIDC認証を使用してAWSに接続
+      - aws-cli/setup:
+          role-arn: arn:aws:iam::992382483259:role/cci-hidetaka-oidc-role
       - aws-ecs/update-service:
           cluster-name: ${ECS_CLUSTER_NAME}
           family: ${ECS_TASK_DEFINITION_NAME}
@@ -113,16 +120,16 @@ workflows:
           requires:
             - checkout
       # ECRへのpushはbuildとtestの両方が成功した後に実行
+      # OIDC認証を使用（context不要）
       - push-to-ecr:
           requires:
             - build
             - test
-          context: aws-credentials
       # ECSへのデプロイはECRへのpush成功後に実行
+      # OIDC認証を使用（context不要）
       - deploy-to-ecs:
           requires:
             - push-to-ecr
-          context: aws-credentials
           filters:
             branches:
               only: main  # mainブランチのみデプロイ
