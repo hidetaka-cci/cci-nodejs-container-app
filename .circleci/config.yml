@@ -4,7 +4,7 @@ version: 2.1
 orbs:
   node: circleci/node@7.2.1
   aws-cli: circleci/aws-cli@5.4.1
-  aws-ecr: circleci/aws-ecr@9.3.7
+  aws-ecr: circleci/aws-ecr@9.8.1
   aws-ecs: circleci/aws-ecs@6.0.2
 
 # ジョブ定義
@@ -20,11 +20,7 @@ jobs:
       - run:
           name: TypeScriptビルド
           command: npm run build
-      - persist_to_workspace:
-          root: ~/project
-          paths:
-            - dist
-            - node_modules
+      # Dockerfile内でビルドしてdistを生成するため、workspace永続化は不要
 
   # vitestによる自動テスト実行
   test:
@@ -36,7 +32,9 @@ jobs:
           pkg-manager: npm
       - run:
           name: Run tests with JUnit reporter
-          command: npm test -- --reporter=junit --outputFile=test-results/junit.xml
+          command: |
+            mkdir -p test-results
+            npm test -- --reporter=junit --outputFile=test-results/junit.xml --coverage
       - store_test_results:
           path: test-results
       - store_artifacts:
@@ -79,8 +77,9 @@ workflows:
                 role_arn: ${AWS_ROLE_ARN}
                 region: ${AWS_REGION}
           cluster: ${ECS_CLUSTER_NAME}
-          family: ${ECS_SERVICE_NAME}
-          container-image-name-updates: "container=${ECS_SERVICE_NAME},tag=${CIRCLE_SHA1}"
+          service-name: ${ECS_SERVICE_NAME}
+          family: cci-nodejs-container-app
+          container-image-name-updates: "container=cci-nodejs-container-app,tag=${CIRCLE_SHA1}"
           requires:
             - aws-ecr/build_and_push_image
           filters:
