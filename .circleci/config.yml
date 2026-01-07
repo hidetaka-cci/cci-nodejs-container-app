@@ -29,11 +29,14 @@ jobs:
     executor: node/default
     steps:
       - checkout
-      # node orbでテスト実行まで自動化（カスタムコマンドとレポーターを指定）
-      - node/test:
+      # node orbでパッケージマネージャーの検知とキャッシュ管理を自動化
+      - node/install-packages:
           pkg-manager: npm
-          run-command: test -- --reporter=junit --outputFile=test-results/junit.xml
-          test-results-path: test-results
+      - run:
+          name: Run tests with JUnit reporter
+          command: npm test -- --reporter=junit --outputFile=test-results/junit.xml
+      - store_test_results:
+          path: test-results
       - store_artifacts:
           path: coverage
 
