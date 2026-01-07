@@ -2,135 +2,105 @@ version: 2.1
 
 # CircleCI Orbsの定義
 orbs:
-  aws-cli: circleci/aws-cli@5.0.0
-  aws-ecr: circleci/aws-ecr@8.0.0
-  aws-ecs: circleci/aws-ecs@3.0.0
+  node: circleci/node@7.2.1
+  aws-cli: circleci/aws-cli@5.4.1
 
 # ジョブ定義
 jobs:
-  # コード取得（デフォルトで利用可能）
-  checkout:
-    docker:
-      - image: cimg/node:20.0
-    steps:
-      - checkout
-
   # TypeScriptビルド
   build:
-    docker:
-      - image: cimg/node:20.0
+    executor: node/default
     steps:
       - checkout
-      - restore_cache:
-          keys:
-            - v1-dependencies-{{ checksum "package-lock.json" }}
-            - v1-dependencies-
-      - run:
-          name: 依存関係のインストール
-          command: npm ci
-      - save_cache:
-          paths:
-            - node_modules
-          key: v1-dependencies-{{ checksum "package-lock.json" }}
+      # node orbでパッケージマネージャーの検知とキャッシュ管理を自動化
+      - node/install-packages:
+          pkg-manager: npm
       - run:
           name: TypeScriptビルド
           command: npm run build
       - persist_to_workspace:
-          root: .
+          root: ~/project
           paths:
             - dist
-    retry:
-      max: 2
+            - node_modules
 
   # vitestによる自動テスト実行
   test:
-    docker:
-      - image: cimg/node:20.0
+    executor: node/default
     steps:
       - checkout
-      - restore_cache:
-          keys:
-            - v1-dependencies-{{ checksum "package-lock.json" }}
-            - v1-dependencies-
-      - run:
-          name: 依存関係のインストール
-          command: npm ci
-      - run:
-          name: テスト実行
-          command: npm test
-      - store_test_results:
-          path: test-results
+      # node orbでテスト実行まで自動化（カスタムコマンドとレポーターを指定）
+      - node/test:
+          pkg-manager: npm
+          run-command: test -- --reporter=junit --outputFile=test-results/junit.xml
+          test-results-path: test-results
       - store_artifacts:
           path: coverage
-    retry:
-      max: 2
 
   # AWS ECRへのイメージpush
   push-to-ecr:
     docker:
-      - image: cimg/base:stable
+      - image: cimg/aws:2025.01
     steps:
       - checkout
       - setup_remote_docker:
-          version: 20.10.14
+          version: default
       # OIDC認証を使用してAWSに接続
       - aws-cli/setup:
-          role-arn: arn:aws:iam::992382483259:role/cci-hidetaka-oidc-role
-      - aws-ecr/build-and-push-image:
-          account-url: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+          role_arn: ${AWS_ROLE_ARN}
           region: ${AWS_REGION}
-          repo: ${ECR_REPO_NAME}
-          tag: ${CIRCLE_SHA1},latest
-          setup-remote-docker: true
-    retry:
-      max: 2
+      - run:
+          name: ECRログイン
+          command: |
+            aws ecr get-login-password --region ${AWS_REGION} | \
+            docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+      - run:
+          name: Dockerイメージのビルドとプッシュ
+          command: |
+            docker build -t ${ECR_REPO_NAME}:${CIRCLE_SHA1} .
+            docker tag ${ECR_REPO_NAME}:${CIRCLE_SHA1} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${CIRCLE_SHA1}
+            docker tag ${ECR_REPO_NAME}:${CIRCLE_SHA1} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:latest
+            docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${CIRCLE_SHA1}
+            docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:latest
 
   # ECS Fargateへのデプロイ
   deploy-to-ecs:
     docker:
-      - image: cimg/base:stable
+      - image: cimg/aws:2025.01
     steps:
       - checkout
       # OIDC認証を使用してAWSに接続
       - aws-cli/setup:
-          role-arn: arn:aws:iam::992382483259:role/cci-hidetaka-oidc-role
-      - aws-ecs/update-service:
-          cluster-name: ${ECS_CLUSTER_NAME}
-          family: ${ECS_TASK_DEFINITION_NAME}
-          service-name: ${ECS_SERVICE_NAME}
-          container-image-name-updates: |
-            container=${ECS_TASK_DEFINITION_NAME},image=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${CIRCLE_SHA1}
-          container-env-var-updates: |
-            container=${ECS_TASK_DEFINITION_NAME},name=IMAGE_TAG,value=${CIRCLE_SHA1}
-          deployment-configuration: |
-            maximumPercent=200,minimumHealthyPercent=100
-    retry:
-      max: 2
+          role_arn: ${AWS_ROLE_ARN}
+          region: ${AWS_REGION}
+      - run:
+          name: ECSサービス更新
+          command: |
+            aws ecs update-service \
+              --cluster ${ECS_CLUSTER_NAME} \
+              --service ${ECS_SERVICE_NAME} \
+              --force-new-deployment
 
 # ワークフロー定義
 workflows:
   build-test-deploy:
     jobs:
-      - checkout
       # buildとtestを並列実行
-      - build:
-          requires:
-            - checkout
-      - test:
-          requires:
-            - checkout
+      - build
+      - test
       # ECRへのpushはbuildとtestの両方が成功した後に実行
-      # OIDC認証を使用（context不要）
+      # OIDC認証を使用（context必須）
       - push-to-ecr:
+          context: aws-oidc
           requires:
             - build
             - test
       # ECSへのデプロイはECRへのpush成功後に実行
-      # OIDC認証を使用（context不要）
+      # OIDC認証を使用（context必須）
       - deploy-to-ecs:
+          context: aws-oidc
           requires:
             - push-to-ecr
           filters:
             branches:
               only: main  # mainブランチのみデプロイ
-
