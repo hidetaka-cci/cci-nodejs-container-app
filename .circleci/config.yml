@@ -4,6 +4,8 @@ version: 2.1
 orbs:
   node: circleci/node@7.2.1
   aws-cli: circleci/aws-cli@5.4.1
+  aws-ecr: circleci/aws-ecr@9.3.7
+  aws-ecs: circleci/aws-ecs@6.0.2
 
 # ジョブ定義
 jobs:
@@ -40,49 +42,7 @@ jobs:
       - store_artifacts:
           path: coverage
 
-  # AWS ECRへのイメージpush
-  push-to-ecr:
-    docker:
-      - image: cimg/aws:2025.01
-    steps:
-      - checkout
-      - setup_remote_docker:
-          version: default
-      # OIDC認証を使用してAWSに接続
-      - aws-cli/setup:
-          role_arn: ${AWS_ROLE_ARN}
-          region: ${AWS_REGION}
-      - run:
-          name: ECRログイン
-          command: |
-            aws ecr get-login-password --region ${AWS_REGION} | \
-            docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
-      - run:
-          name: Dockerイメージのビルドとプッシュ
-          command: |
-            docker build -t ${ECR_REPO_NAME}:${CIRCLE_SHA1} .
-            docker tag ${ECR_REPO_NAME}:${CIRCLE_SHA1} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${CIRCLE_SHA1}
-            docker tag ${ECR_REPO_NAME}:${CIRCLE_SHA1} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:latest
-            docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${CIRCLE_SHA1}
-            docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:latest
 
-  # ECS Fargateへのデプロイ
-  deploy-to-ecs:
-    docker:
-      - image: cimg/aws:2025.01
-    steps:
-      - checkout
-      # OIDC認証を使用してAWSに接続
-      - aws-cli/setup:
-          role_arn: ${AWS_ROLE_ARN}
-          region: ${AWS_REGION}
-      - run:
-          name: ECSサービス更新
-          command: |
-            aws ecs update-service \
-              --cluster ${ECS_CLUSTER_NAME} \
-              --service ${ECS_SERVICE_NAME} \
-              --force-new-deployment
 
 # ワークフロー定義
 workflows:
@@ -93,17 +53,36 @@ workflows:
       - test
       # ECRへのpushはbuildとtestの両方が成功した後に実行
       # OIDC認証を使用（context必須）
-      - push-to-ecr:
+      # aws-ecr Orbを使用してDocker Layer Cachingを有効化
+      - aws-ecr/build_and_push_image:
           context: aws-oidc
+          auth:
+            - aws-cli/setup:
+                role_arn: ${AWS_ROLE_ARN}
+                region: ${AWS_REGION}
+          repo: ${ECR_REPO_NAME}
+          tag: ${CIRCLE_SHA1}
+          docker_layer_caching: true
           requires:
             - build
             - test
+          filters:
+            branches:
+              only: main  # mainブランチのみECRにプッシュ
       # ECSへのデプロイはECRへのpush成功後に実行
       # OIDC認証を使用（context必須）
-      - deploy-to-ecs:
+      # aws-ecs Orbを使用してサービス更新
+      - aws-ecs/deploy_service_update:
           context: aws-oidc
+          auth:
+            - aws-cli/setup:
+                role_arn: ${AWS_ROLE_ARN}
+                region: ${AWS_REGION}
+          cluster: ${ECS_CLUSTER_NAME}
+          family: ${ECS_SERVICE_NAME}
+          container-image-name-updates: "container=${ECS_SERVICE_NAME},tag=${CIRCLE_SHA1}"
           requires:
-            - push-to-ecr
+            - aws-ecr/build_and_push_image
           filters:
             branches:
               only: main  # mainブランチのみデプロイ
