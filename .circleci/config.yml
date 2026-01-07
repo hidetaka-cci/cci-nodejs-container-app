@@ -57,6 +57,8 @@ workflows:
             - aws-cli/setup:
                 role_arn: ${AWS_ROLE_ARN}
                 region: ${AWS_REGION}
+          region: ${AWS_REGION}
+          account_id: ${AWS_ACCOUNT_ID}
           repo: ${ECR_REPO_NAME}
           tag: ${CIRCLE_SHA1}
           requires:
