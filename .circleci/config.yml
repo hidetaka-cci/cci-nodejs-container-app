@@ -76,6 +76,7 @@ workflows:
             - aws-cli/setup:
                 role_arn: ${AWS_ROLE_ARN}
                 region: ${AWS_REGION}
+          region: ${AWS_REGION}
           cluster: ${ECS_CLUSTER_NAME}
           service_name: ${ECS_SERVICE_NAME}
           family: cci-nodejs-container-app
